@@ -2,12 +2,13 @@
 	import { toast } from 'svelte-sonner';
 
 	import { onMount, getContext, tick } from 'svelte';
-	import { models, tools, functions, user } from '$lib/stores';
+	import { models, tools, functions, user, config } from '$lib/stores';
 	import { WEBUI_BASE_URL, DEFAULT_CAPABILITIES } from '$lib/constants';
 
 	import { getTools } from '$lib/apis/tools';
 	import { getFunctions } from '$lib/apis/functions';
 	import { getModelsDefaults } from '$lib/apis/configs';
+	import { getVoices } from '$lib/apis/audio';
 
 	import AdvancedParams from '$lib/components/chat/Settings/Advanced/AdvancedParams.svelte';
 	import Tags from '$lib/components/common/Tags.svelte';
@@ -105,6 +106,94 @@
 	let accessGrants = [];
 	let terminalId = '';
 	let tts = { voice: '' };
+
+	type TtsVoiceOption = { id: string; name: string };
+
+	let ttsVoiceList: TtsVoiceOption[] = [];
+	let ttsVoiceFilter = '';
+	let ttsVoicesLoading = false;
+	let ttsVoicesLoadSeq = 0;
+	let ttsVoicesEngineKey: string | null = null;
+
+	const loadTtsVoiceOptions = async () => {
+		const seq = ++ttsVoicesLoadSeq;
+		const engine = $config?.audio?.tts?.engine ?? '';
+		ttsVoicesLoading = true;
+		try {
+			if (engine === 'transformers') {
+				if (seq === ttsVoicesLoadSeq) ttsVoiceList = [];
+				return;
+			}
+			if (engine === '') {
+				const fromBrowser = () =>
+					(speechSynthesis.getVoices() ?? [])
+						.map((x) => ({
+							id: x.voiceURI,
+							name: `${x.name} (${x.lang})`
+						}))
+						.sort((a, b) => a.name.localeCompare(b.name));
+
+				let list = fromBrowser();
+				if (list.length === 0) {
+					await new Promise<void>((resolve) => {
+						const done = () => {
+							speechSynthesis.removeEventListener('voiceschanged', done);
+							resolve();
+						};
+						speechSynthesis.addEventListener('voiceschanged', done);
+						setTimeout(() => {
+							speechSynthesis.removeEventListener('voiceschanged', done);
+							resolve();
+						}, 2500);
+					});
+					list = fromBrowser();
+				}
+				if (seq === ttsVoicesLoadSeq) ttsVoiceList = list;
+				return;
+			}
+			const res = await getVoices(localStorage.token);
+			if (seq === ttsVoicesLoadSeq && res?.voices) {
+				ttsVoiceList = res.voices as TtsVoiceOption[];
+			}
+		} catch (e) {
+			if (seq === ttsVoicesLoadSeq) {
+				toast.error(`${e}`);
+				ttsVoiceList = [];
+			}
+		} finally {
+			if (seq === ttsVoicesLoadSeq) ttsVoicesLoading = false;
+		}
+	};
+
+	$: filteredModelTtsVoices = (() => {
+		const list = ttsVoiceList;
+		const tokens = ttsVoiceFilter
+			.trim()
+			.toLowerCase()
+			.split(/\s+/)
+			.filter((t) => t.length > 0);
+		let out = list;
+		if (tokens.length > 0) {
+			out = list.filter((v) => {
+				const id = String(v.id ?? '').toLowerCase();
+				const nm = String(v.name ?? '').toLowerCase();
+				return tokens.some((tok) => id.includes(tok) || nm.includes(tok));
+			});
+		}
+		const sel = (tts.voice ?? '').trim();
+		if (!sel || out.some((v) => v.id === sel)) return out;
+		const cur = list.find((v) => v.id === sel);
+		return cur ? [cur, ...out] : out;
+	})();
+
+	$: if (loaded && $config?.audio?.tts) {
+		const key = $config.audio.tts.engine ?? '';
+		if (ttsVoicesEngineKey !== key) {
+			ttsVoicesEngineKey = key;
+			ttsVoiceFilter = '';
+			loadTtsVoiceOptions();
+		}
+	}
 
 	const submitHandler = async () => {
 		loading = true;
@@ -851,12 +940,42 @@
 								{$i18n.t('TTS Voice')}
 							</div>
 						</div>
-						<input
-							class="w-full text-sm bg-transparent outline-hidden"
-							type="text"
-							bind:value={tts.voice}
-							placeholder={$i18n.t('e.g. alloy, echo, shimmer')}
-						/>
+						<div class="mb-2 text-xs text-gray-500 dark:text-gray-400">
+							{$i18n.t('Model TTS voice list hint')}
+						</div>
+						{#if ($config?.audio?.tts?.engine ?? '') === 'transformers'}
+							<input
+								class="w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="text"
+								bind:value={tts.voice}
+								placeholder={$i18n.t('CMU ARCTIC speaker embedding name')}
+							/>
+						{:else if ttsVoicesLoading}
+							<div class="flex justify-center py-4">
+								<Spinner className="size-6" />
+							</div>
+						{:else}
+							<input
+								type="search"
+								class="w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden mb-1.5 font-mono"
+								bind:value={ttsVoiceFilter}
+								placeholder={$i18n.t('Filter voices by id or name')}
+								autocomplete="off"
+								spellcheck="false"
+								aria-label={$i18n.t('Filter voices by id or name')}
+							/>
+							<select
+								class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden font-mono"
+								bind:value={tts.voice}
+								disabled={ttsVoiceList.length === 0}
+								aria-label={$i18n.t('TTS Voice')}
+							>
+								<option value="">{$i18n.t('Default')}</option>
+								{#each filteredModelTtsVoices as v}
+									<option value={v.id}>{v.name}</option>
+								{/each}
+							</select>
+						{/if}
 					</div>
 
 					<hr class=" border-gray-100/30 dark:border-gray-850/30 my-4" />

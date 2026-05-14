@@ -1,0 +1,40 @@
+# 自架 Open WebUI（含自訂程式碼）：資料與快取在 volume，設定用 .env
+# 使用方式：cp deployment/compose.env.example .env 後編輯，再 docker compose up -d
+
+services:
+  open-web-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_HASH: ${BUILD_HASH:-custom}
+    image: ${OPEN_WEBUI_IMAGE_NAME:-open-web-ui}:${OPEN_WEBUI_IMAGE_TAG:-local}
+    container_name: open-web-ui
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DOCKER: "true"
+      PORT: "8080"
+      # 若未在 .env 設定，Compose 會在啟動前報錯提醒
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY in project root .env}
+      WEBUI_URL: ${WEBUI_URL:-http://localhost:8080}
+    volumes:
+      - open_webui_data:/app/backend/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --silent --fail http://localhost:8080/health | jq -ne 'input.status == true' || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  open_webui_data:
+    name: ${OPEN_WEBUI_VOLUME_NAME:-open_webui_data}

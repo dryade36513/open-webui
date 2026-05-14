@@ -61,6 +61,8 @@
 		addTerminalConnection,
 		removeTerminalConnection
 	} from '$lib/utils/connections';
+	import { pickRotatingDirectConnectionApiKey } from '$lib/utils/openaiConnectionKeys';
+	import { resolveOpenAIProviderModelId } from '$lib/utils/openaiProviderUrls';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
 	import { bestMatchingLanguage, displayFileHandler, getUserTimezone } from '$lib/utils';
@@ -506,14 +508,21 @@
 						const urlIdx = model?.urlIdx;
 
 						const OPENAI_API_URL = directConnections.OPENAI_API_BASE_URLS[urlIdx];
-						const OPENAI_API_KEY = directConnections.OPENAI_API_KEYS[urlIdx];
-						const API_CONFIG = directConnections.OPENAI_API_CONFIGS[urlIdx];
+						const API_CONFIG =
+							directConnections.OPENAI_API_CONFIGS[urlIdx] ??
+							directConnections.OPENAI_API_CONFIGS[String(urlIdx)];
+						const OPENAI_API_KEY = pickRotatingDirectConnectionApiKey(
+							urlIdx,
+							directConnections.OPENAI_API_KEYS[urlIdx],
+							API_CONFIG
+						);
 
 						try {
-							if (API_CONFIG?.prefix_id) {
-								const prefixId = API_CONFIG.prefix_id;
-								form_data['model'] = form_data['model'].replace(`${prefixId}.`, ``);
-							}
+							form_data['model'] = resolveOpenAIProviderModelId(
+								OPENAI_API_URL,
+								form_data['model'],
+								API_CONFIG?.prefix_id
+							);
 
 							const [res, controller] = await chatCompletion(
 								OPENAI_API_KEY,

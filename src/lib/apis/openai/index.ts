@@ -1,4 +1,6 @@
 import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+import { normalizeOpenAIModelsListPayload } from '$lib/utils/openaiModelsResponse';
+import { resolveOpenAIChatCompletionsUrl } from '$lib/utils/openaiProviderUrls';
 
 export const getOpenAIConfig = async (token: string = '') => {
 	let error = null;
@@ -232,7 +234,7 @@ export const getOpenAIModelsDirect = async (url: string, key: string) => {
 		throw error;
 	}
 
-	return res;
+	return normalizeOpenAIModelsListPayload(res);
 };
 
 export const getOpenAIModels = async (token: string, urlIdx?: number) => {
@@ -262,7 +264,7 @@ export const getOpenAIModels = async (token: string, urlIdx?: number) => {
 		throw error;
 	}
 
-	return res;
+	return normalizeOpenAIModelsListPayload(res);
 };
 
 export const verifyOpenAIConnection = async (
@@ -327,7 +329,7 @@ export const verifyOpenAIConnection = async (
 		}
 	}
 
-	return res;
+	return normalizeOpenAIModelsListPayload(res);
 };
 
 export const chatCompletion = async (
@@ -338,7 +340,7 @@ export const chatCompletion = async (
 	const controller = new AbortController();
 	let error = null;
 
-	const res = await fetch(`${url}/chat/completions`, {
+	const res = await fetch(resolveOpenAIChatCompletionsUrl(url), {
 		signal: controller.signal,
 		method: 'POST',
 		headers: {
@@ -366,7 +368,7 @@ export const generateOpenAIChatCompletion = async (
 ) => {
 	let error = null;
 
-	const res = await fetch(`${url}/chat/completions`, {
+	const res = await fetch(resolveOpenAIChatCompletionsUrl(url), {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${token}`,

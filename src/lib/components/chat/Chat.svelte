@@ -1750,8 +1750,11 @@
 				// Non-stream response
 				message.content += choices[0]?.message?.content;
 			} else {
-				// Stream response
-				let value = choices[0]?.delta?.content ?? '';
+				// Stream response (OpenAI: delta.content; some proxies use delta.text)
+				const delta = choices[0]?.delta ?? {};
+				let value =
+					(typeof delta.content === 'string' ? delta.content : '') ||
+					(typeof delta.text === 'string' ? delta.text : '');
 				if (message.content == '' && value == '\n') {
 					console.log('Empty response');
 				} else {

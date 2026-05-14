@@ -33,6 +33,7 @@
 	let TTS_MODEL = '';
 	let TTS_VOICE = '';
 	let TTS_OPENAI_PARAMS = '';
+	let TTS_OPENAI_SPEED = 1;
 	let TTS_SPLIT_ON: TTS_RESPONSE_SPLIT = TTS_RESPONSE_SPLIT.PUNCTUATION;
 	let TTS_AZURE_SPEECH_REGION = '';
 	let TTS_AZURE_SPEECH_BASE_URL = '';
@@ -61,6 +62,35 @@
 	// eslint-disable-next-line no-undef
 	let voices: SpeechSynthesisVoice[] = [];
 	let models: Awaited<ReturnType<typeof _getModels>>['models'] = [];
+
+	/** Space-separated tokens: voice matches if id or name contains ANY token (case-insensitive); blank = show all. */
+	let ttsVoiceFilter = '';
+
+	const adminTtsVoiceRowValue = (v: { id?: string; voiceURI?: string }) =>
+		String(v.id ?? v.voiceURI ?? '');
+
+	const clampTtsOpenAiSpeed = (v: number) => Math.min(2, Math.max(0.2, Number.isFinite(v) ? v : 1));
+
+	$: filteredAdminTtsVoices = (() => {
+		const list = (voices ?? []) as Array<{ id?: string; name?: string; voiceURI?: string }>;
+		const tokens = ttsVoiceFilter
+			.trim()
+			.toLowerCase()
+			.split(/\s+/)
+			.filter((t) => t.length > 0);
+		let out = list;
+		if (tokens.length > 0) {
+			out = list.filter((v) => {
+				const id = String(v.id ?? v.voiceURI ?? '').toLowerCase();
+				const nm = String(v.name ?? '').toLowerCase();
+				return tokens.some((tok) => id.includes(tok) || nm.includes(tok));
+			});
+		}
+		const sel = (TTS_VOICE ?? '').trim();
+		if (!sel || out.some((v) => adminTtsVoiceRowValue(v) === sel)) return out;
+		const cur = list.find((v) => adminTtsVoiceRowValue(v) === sel);
+		return cur ? [cur, ...out] : out;
+	})();
 
 	const getModels = async () => {
 		if (TTS_ENGINE === '') {
@@ -114,11 +144,14 @@
 			return;
 		}
 
+		const openaiSpeed = clampTtsOpenAiSpeed(Number(TTS_OPENAI_SPEED));
+
 		const res = await updateAudioConfig(localStorage.token, {
 			tts: {
 				OPENAI_API_BASE_URL: TTS_OPENAI_API_BASE_URL,
 				OPENAI_API_KEY: TTS_OPENAI_API_KEY,
 				OPENAI_PARAMS: openaiParams,
+				OPENAI_SPEED: openaiSpeed,
 				API_KEY: TTS_API_KEY,
 				ENGINE: TTS_ENGINE,
 				MODEL: TTS_MODEL,
@@ -151,6 +184,7 @@
 
 		if (res) {
 			saveHandler();
+			TTS_OPENAI_SPEED = openaiSpeed;
 			config.set(await getBackendConfig());
 		}
 	};
@@ -169,6 +203,8 @@
 			TTS_OPENAI_API_BASE_URL = res.tts.OPENAI_API_BASE_URL;
 			TTS_OPENAI_API_KEY = res.tts.OPENAI_API_KEY;
 			TTS_OPENAI_PARAMS = JSON.stringify(res?.tts?.OPENAI_PARAMS ?? '', null, 2);
+			const rawSpeed = Number(res?.tts?.OPENAI_SPEED);
+			TTS_OPENAI_SPEED = clampTtsOpenAiSpeed(Number.isFinite(rawSpeed) ? rawSpeed : 1);
 			TTS_API_KEY = res.tts.API_KEY;
 
 			TTS_ENGINE = res.tts.ENGINE;
@@ -516,14 +552,16 @@
 							bind:value={TTS_ENGINE}
 							placeholder={$i18n.t('Select a mode')}
 							on:change={async (e) => {
+								const next = String(e.target?.value ?? '');
+								ttsVoiceFilter = '';
 								await updateConfigHandler();
 								await getVoices();
 								await getModels();
 
-								if (e.target?.value === 'openai') {
+								if (next === 'openai') {
 									TTS_VOICE = 'alloy';
 									TTS_MODEL = 'tts-1';
-								} else if (e.target?.value === 'mistral') {
+								} else if (next === 'mistral') {
 									TTS_VOICE = '';
 									TTS_MODEL = 'voxtral-mini-tts-2603';
 								} else {
@@ -535,6 +573,7 @@
 							<option value="">{$i18n.t('Web API')}</option>
 							<option value="transformers">{$i18n.t('Transformers')} ({$i18n.t('Local')})</option>
 							<option value="openai">{$i18n.t('OpenAI')}</option>
+							<option value="custom_openai">{$i18n.t('Custom OpenAI')}</option>
 							<option value="elevenlabs">{$i18n.t('ElevenLabs')}</option>
 							<option value="azure">{$i18n.t('Azure AI Speech')}</option>
 							<option value="mistral">{$i18n.t('MistralAI')}</option>
@@ -542,7 +581,7 @@
 					</div>
 				</div>
 
-				{#if TTS_ENGINE === 'openai'}
+				{#if TTS_ENGINE === 'openai' || TTS_ENGINE === 'custom_openai'}
 					<div>
 						<div class="mt-1 flex gap-2 mb-1">
 							<input
@@ -614,6 +653,15 @@
 					{#if TTS_ENGINE === ''}
 						<div>
 							<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
+							<input
+								type="search"
+								class="w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden mb-1.5"
+								bind:value={ttsVoiceFilter}
+								placeholder={$i18n.t('Filter voices by id or name')}
+								autocomplete="off"
+								spellcheck="false"
+								aria-label={$i18n.t('Filter voices by id or name')}
+							/>
 							<div class="flex w-full">
 								<div class="flex-1">
 									<select
@@ -621,7 +669,7 @@
 										bind:value={TTS_VOICE}
 									>
 										<option value="" selected={TTS_VOICE !== ''}>{$i18n.t('Default')}</option>
-										{#each voices as voice}
+										{#each filteredAdminTtsVoices as voice}
 											<option
 												value={voice.voiceURI}
 												class="bg-gray-100 dark:bg-gray-700"
@@ -673,24 +721,32 @@
 								</a>
 							</div>
 						</div>
-					{:else if TTS_ENGINE === 'openai'}
+					{:else if TTS_ENGINE === 'openai' || TTS_ENGINE === 'custom_openai'}
 						<div class=" flex gap-2">
 							<div class="w-full">
 								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
+								<input
+									type="search"
+									class="w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden mb-1.5 font-mono"
+									bind:value={ttsVoiceFilter}
+									placeholder={$i18n.t('Filter voices by id or name')}
+									autocomplete="off"
+									spellcheck="false"
+									aria-label={$i18n.t('Filter voices by id or name')}
+								/>
 								<div class="flex w-full">
-									<div class="flex-1">
-										<input
-											list="voice-list"
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									<div class="flex-1 min-w-0">
+										<select
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden font-mono"
 											bind:value={TTS_VOICE}
-											placeholder={$i18n.t('Select a voice')}
-										/>
-
-										<datalist id="voice-list">
-											{#each voices as voice}
-												<option value={voice.id}>{voice.name}</option>
+											disabled={voices.length === 0}
+											aria-label={$i18n.t('TTS Voice')}
+										>
+											<option value="">{$i18n.t('Select a voice')}</option>
+											{#each filteredAdminTtsVoices as v}
+												<option value={v.id}>{v.name}</option>
 											{/each}
-										</datalist>
+										</select>
 									</div>
 								</div>
 							</div>
@@ -699,13 +755,13 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<input
-											list="tts-model-list"
+											list="tts-model-list-openai"
 											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 											bind:value={TTS_MODEL}
 											placeholder={$i18n.t('Select a model')}
 										/>
 
-										<datalist id="tts-model-list">
+										<datalist id="tts-model-list-openai">
 											{#each models as model}
 												<option value={model.id} class="bg-gray-50 dark:bg-gray-700" />
 											{/each}
@@ -730,24 +786,50 @@
 								</div>
 							</div>
 						</div>
+
+						<div class="mt-2 mb-1">
+							<div class="mb-1.5 text-xs font-medium">{$i18n.t('TTS synthesis speed')}</div>
+							<div class="flex flex-wrap items-center gap-2">
+								<input
+									type="number"
+									class="w-32 rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									min="0.2"
+									max="2"
+									step="0.05"
+									bind:value={TTS_OPENAI_SPEED}
+									aria-label={$i18n.t('TTS synthesis speed')}
+								/>
+								<span class="text-xs text-gray-500 dark:text-gray-400"
+									>{$i18n.t('TTS synthesis speed hint')}</span
+								>
+							</div>
+						</div>
 					{:else if TTS_ENGINE === 'elevenlabs'}
 						<div class=" flex gap-2">
 							<div class="w-full">
 								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
+								<input
+									type="search"
+									class="w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden mb-1.5 font-mono"
+									bind:value={ttsVoiceFilter}
+									placeholder={$i18n.t('Filter voices by id or name')}
+									autocomplete="off"
+									spellcheck="false"
+									aria-label={$i18n.t('Filter voices by id or name')}
+								/>
 								<div class="flex w-full">
-									<div class="flex-1">
-										<input
-											list="voice-list"
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									<div class="flex-1 min-w-0">
+										<select
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden font-mono"
 											bind:value={TTS_VOICE}
-											placeholder={$i18n.t('Select a voice')}
-										/>
-
-										<datalist id="voice-list">
-											{#each voices as voice}
-												<option value={voice.id}>{voice.name}</option>
+											disabled={voices.length === 0}
+											aria-label={$i18n.t('TTS Voice')}
+										>
+											<option value="">{$i18n.t('Select a voice')}</option>
+											{#each filteredAdminTtsVoices as v}
+												<option value={v.id}>{v.name}</option>
 											{/each}
-										</datalist>
+										</select>
 									</div>
 								</div>
 							</div>
@@ -775,20 +857,28 @@
 						<div class=" flex gap-2">
 							<div class="w-full">
 								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
+								<input
+									type="search"
+									class="w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden mb-1.5 font-mono"
+									bind:value={ttsVoiceFilter}
+									placeholder={$i18n.t('Filter voices by id or name')}
+									autocomplete="off"
+									spellcheck="false"
+									aria-label={$i18n.t('Filter voices by id or name')}
+								/>
 								<div class="flex w-full">
-									<div class="flex-1">
-										<input
-											list="voice-list"
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									<div class="flex-1 min-w-0">
+										<select
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden font-mono"
 											bind:value={TTS_VOICE}
-											placeholder={$i18n.t('Select a voice')}
-										/>
-
-										<datalist id="voice-list">
-											{#each voices as voice}
-												<option value={voice.id}>{voice.name}</option>
+											disabled={voices.length === 0}
+											aria-label={$i18n.t('TTS Voice')}
+										>
+											<option value="">{$i18n.t('Select a voice')}</option>
+											{#each filteredAdminTtsVoices as v}
+												<option value={v.id}>{v.name}</option>
 											{/each}
-										</datalist>
+										</select>
 									</div>
 								</div>
 							</div>
@@ -818,20 +908,28 @@
 						<div class=" flex gap-2">
 							<div class="w-full">
 								<div class=" mb-1.5 text-xs font-medium">{$i18n.t('TTS Voice')}</div>
+								<input
+									type="search"
+									class="w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden mb-1.5 font-mono"
+									bind:value={ttsVoiceFilter}
+									placeholder={$i18n.t('Filter voices by id or name')}
+									autocomplete="off"
+									spellcheck="false"
+									aria-label={$i18n.t('Filter voices by id or name')}
+								/>
 								<div class="flex w-full">
-									<div class="flex-1">
-										<input
-											list="voice-list"
-											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									<div class="flex-1 min-w-0">
+										<select
+											class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden font-mono"
 											bind:value={TTS_VOICE}
-											placeholder={$i18n.t('Select a voice')}
-										/>
-
-										<datalist id="voice-list">
-											{#each voices as voice}
-												<option value={voice.id}>{voice.name}</option>
+											disabled={voices.length === 0}
+											aria-label={$i18n.t('TTS Voice')}
+										>
+											<option value="">{$i18n.t('Select a voice')}</option>
+											{#each filteredAdminTtsVoices as v}
+												<option value={v.id}>{v.name}</option>
 											{/each}
-										</datalist>
+										</select>
 									</div>
 								</div>
 							</div>

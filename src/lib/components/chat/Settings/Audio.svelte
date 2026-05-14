@@ -33,6 +33,49 @@
 	let voices = [];
 	let voice = '';
 
+	/** Substring filter for TTS voice lists (id / URI / name; case-insensitive). */
+	let ttsVoiceFilter = '';
+
+	$: filteredChatSetVoices = (() => {
+		const tokens = ttsVoiceFilter
+			.trim()
+			.toLowerCase()
+			.split(/\s+/)
+			.filter((t) => t.length > 0);
+		const rowMatches = (fields: string[]) => {
+			if (tokens.length === 0) return true;
+			const lowered = fields.map((f) => String(f ?? '').toLowerCase());
+			return tokens.some((tok) => lowered.some((f) => f.includes(tok)));
+		};
+		if ($config.audio.tts.engine === '') {
+			const base = (voices ?? []).filter((v) => nonLocalVoices || (v as { localService?: boolean }).localService === true);
+			let out = base;
+			if (tokens.length > 0) {
+				out = base.filter((v) => {
+					const nm = String(v.name ?? '');
+					const uri = String((v as SpeechSynthesisVoice).voiceURI ?? '');
+					const lang = String((v as SpeechSynthesisVoice).lang ?? '');
+					return rowMatches([nm, uri, lang]);
+				});
+			}
+			const sel = (voice ?? '').trim();
+			if (!sel || out.some((v) => v.name === sel)) return out;
+			const cur = base.find((v) => v.name === sel);
+			return cur ? [cur, ...out] : out;
+		}
+		const list = voices ?? [];
+		let out = list;
+		if (tokens.length > 0) {
+			out = list.filter((v: { id?: string; name?: string }) =>
+				rowMatches([String(v.id ?? ''), String(v.name ?? '')])
+			);
+		}
+		const sel = (voice ?? '').trim();
+		if (!sel || out.some((v: { id?: string }) => String(v.id ?? '') === sel)) return out;
+		const cur = list.find((v: { id?: string }) => String(v.id ?? '') === sel);
+		return cur ? [cur, ...out] : out;
+	})();
+
 	// Audio speed control
 	let playbackRate = 1;
 
@@ -249,6 +292,9 @@
 					<select
 						class="w-fit pr-8 rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
 						bind:value={TTSEngine}
+						on:change={() => {
+							ttsVoiceFilter = '';
+						}}
 						aria-label={$i18n.t('Text-to-Speech Engine')}
 						placeholder={$i18n.t('Select an engine')}
 					>
@@ -321,21 +367,28 @@
 			{#if TTSModel}
 				<div>
 					<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Set Voice')}</div>
+					<input
+						type="search"
+						class="w-full rounded-lg border border-gray-200 dark:border-gray-700 py-2 px-3 text-sm bg-gray-50 dark:bg-gray-850 dark:text-gray-300 outline-hidden mb-1.5 font-mono"
+						bind:value={ttsVoiceFilter}
+						placeholder={$i18n.t('Filter voices by id or name')}
+						autocomplete="off"
+						spellcheck="false"
+						aria-label={$i18n.t('Filter voices by id or name')}
+					/>
 					<div class="flex w-full">
-						<div class="flex-1">
-							<input
-								list="voice-list"
-								class="w-full text-sm bg-transparent dark:text-gray-300 outline-hidden"
+						<div class="flex-1 min-w-0">
+							<select
+								class="w-full rounded-lg border border-gray-200 dark:border-gray-700 py-2 px-3 text-sm bg-gray-50 dark:bg-gray-850 dark:text-gray-300 outline-hidden font-mono"
 								bind:value={voice}
+								disabled={voices.length === 0}
 								aria-label={$i18n.t('Voice')}
-								placeholder={$i18n.t('Select a voice')}
-							/>
-
-							<datalist id="voice-list">
-								{#each voices as voice}
-									<option value={voice.id}>{voice.name}</option>
+							>
+								<option value="">{$i18n.t('Select a voice')}</option>
+								{#each filteredChatSetVoices as v}
+									<option value={v.id}>{v.name}</option>
 								{/each}
-							</datalist>
+							</select>
 						</div>
 					</div>
 				</div>
@@ -360,6 +413,15 @@
 		{:else if $config.audio.tts.engine === ''}
 			<div>
 				<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Set Voice')}</div>
+				<input
+					type="search"
+					class="w-full rounded-lg border border-gray-200 dark:border-gray-700 py-2 px-3 text-sm bg-gray-50 dark:bg-gray-850 dark:text-gray-300 outline-hidden mb-1.5"
+					bind:value={ttsVoiceFilter}
+					placeholder={$i18n.t('Filter voices by id or name')}
+					autocomplete="off"
+					spellcheck="false"
+					aria-label={$i18n.t('Filter voices by id or name')}
+				/>
 				<div class="flex w-full">
 					<div class="flex-1">
 						<select
@@ -368,7 +430,7 @@
 							aria-label={$i18n.t('Voice')}
 						>
 							<option value="" selected={voice !== ''}>{$i18n.t('Default')}</option>
-							{#each voices.filter((v) => nonLocalVoices || v.localService === true) as _voice}
+							{#each filteredChatSetVoices as _voice}
 								<option
 									value={_voice.name}
 									class="bg-gray-100 dark:bg-gray-700"
@@ -391,21 +453,28 @@
 		{:else if $config.audio.tts.engine !== ''}
 			<div>
 				<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Set Voice')}</div>
+				<input
+					type="search"
+					class="w-full rounded-lg border border-gray-200 dark:border-gray-700 py-2 px-3 text-sm bg-gray-50 dark:bg-gray-850 dark:text-gray-300 outline-hidden mb-1.5 font-mono"
+					bind:value={ttsVoiceFilter}
+					placeholder={$i18n.t('Filter voices by id or name')}
+					autocomplete="off"
+					spellcheck="false"
+					aria-label={$i18n.t('Filter voices by id or name')}
+				/>
 				<div class="flex w-full">
-					<div class="flex-1">
-						<input
-							list="voice-list"
-							class="w-full text-sm bg-transparent dark:text-gray-300 outline-hidden"
+					<div class="flex-1 min-w-0">
+						<select
+							class="w-full rounded-lg border border-gray-200 dark:border-gray-700 py-2 px-3 text-sm bg-gray-50 dark:bg-gray-850 dark:text-gray-300 outline-hidden font-mono"
 							bind:value={voice}
+							disabled={voices.length === 0}
 							aria-label={$i18n.t('Voice')}
-							placeholder={$i18n.t('Select a voice')}
-						/>
-
-						<datalist id="voice-list">
-							{#each voices as voice}
-								<option value={voice.id}>{voice.name}</option>
+						>
+							<option value="">{$i18n.t('Select a voice')}</option>
+							{#each filteredChatSetVoices as v}
+								<option value={v.id}>{v.name}</option>
 							{/each}
-						</datalist>
+						</select>
 					</div>
 				</div>
 			</div>

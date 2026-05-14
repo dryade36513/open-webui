@@ -1,0 +1,69 @@
+# HTTPS 對外：Caddy 自動憑證，Open WebUI 僅在 Docker 內部網路
+# 使用：cp deployment/compose.env.example .env
+#       設定 WEBUI_DOMAIN、WEBUI_URL=https://你的網域、WEBUI_SECRET_KEY
+#       docker compose -f docker-compose.https.yml up -d
+
+services:
+  open-web-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_HASH: ${BUILD_HASH:-custom}
+    image: ${OPEN_WEBUI_IMAGE_NAME:-open-web-ui}:${OPEN_WEBUI_IMAGE_TAG:-local}
+    container_name: open-web-ui
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DOCKER: "true"
+      PORT: "8080"
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY in project root .env}
+      WEBUI_URL: ${WEBUI_URL:?Set WEBUI_URL in .env to your public https URL}
+    volumes:
+      - open_webui_data:/app/backend/data
+    networks:
+      - webinternal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --silent --fail http://localhost:8080/health | jq -ne 'input.status == true' || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: open-web-ui-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      WEBUI_DOMAIN: ${WEBUI_DOMAIN:?Set WEBUI_DOMAIN in .env e.g. chat.example.com}
+    volumes:
+      - ./deployment/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - webinternal
+    depends_on:
+      open-web-ui:
+        condition: service_healthy
+
+networks:
+  webinternal:
+    driver: bridge
+
+volumes:
+  open_webui_data:
+    name: ${OPEN_WEBUI_VOLUME_NAME:-open_webui_data}
+  caddy_data:
+  caddy_config:

@@ -11,6 +11,7 @@ from pydub import AudioSegment
 from pydub.silence import split_on_silence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+from urllib.parse import urlparse
 
 from fnmatch import fnmatch
 import aiohttp
@@ -35,6 +36,7 @@ from pydantic import BaseModel
 
 
 from open_webui.utils.misc import strict_match_mime_type
+from open_webui.utils.openai_provider_urls import resolve_openai_chat_completions_upstream_url
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.headers import include_user_info_headers
@@ -72,6 +74,35 @@ log = logging.getLogger(__name__)
 
 SPEECH_CACHE_DIR = CACHE_DIR / 'audio' / 'speech'
 SPEECH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Admin "Custom OpenAI" TTS: fixed voice dropdown (no upstream /voices discovery).
+CUSTOM_OPENAI_TTS_FIXED_VOICE_IDS: tuple[str, ...] = (
+    'de-DE-FlorianMultilingualNeural',
+    'de-DE-SeraphinaMultilingualNeural',
+    'en-US-AndrewMultilingualNeural',
+    'en-US-AvaMultilingualNeural',
+    'en-US-BrianMultilingualNeural',
+    'en-US-EmmaMultilingualNeural',
+    'fr-FR-RemyMultilingualNeural',
+    'fr-FR-VivienneMultilingualNeural',
+    'zh-CN-XiaoxiaoNeural',
+    'zh-CN-XiaoyiNeural',
+    'zh-CN-YunjianNeural',
+    'zh-CN-YunxiNeural',
+    'zh-CN-YunxiaNeural',
+    'zh-CN-YunyangNeural',
+    'zh-CN-liaoning-XiaobeiNeural',
+    'zh-CN-shaanxi-XiaoniNeural',
+    'zh-TW-HsiaoYuNeural',
+    'zh-TW-HsiaoChenNeural',
+    'zh-TW-YunJheNeural',
+    'alloy',
+    'echo',
+    'fable',
+    'onyx',
+    'nova',
+    'shimmer',
+)
 
 
 ##########################################
@@ -127,6 +158,71 @@ def convert_audio_to_mp3(file_path):
     except Exception as e:
         log.error(f'Error converting audio file: {e}')
         return None
+
+
+def resolve_azure_tts_rest_origin(region: Optional[str], base_url: Optional[str]) -> str:
+    """
+    Base URL for Speech REST (voice list + SSML synthesis) must be the regional TTS host:
+    https://<region>.tts.speech.microsoft.com
+
+    Azure Portal often shows the multi-service endpoint
+    https://<region>.api.cognitive.microsoft.com/ — appending /cognitiveservices/voices/list there
+    fails, so the voice dropdown stays empty.
+    """
+    reg = (region or '').strip().lower().replace(' ', '') or None
+    raw_in = (base_url or '').strip()
+
+    def regional_tts_origin(r: str) -> str:
+        return f'https://{r}.tts.speech.microsoft.com'.rstrip('/')
+
+    if not raw_in:
+        return regional_tts_origin(reg or 'eastus')
+
+    raw = raw_in.rstrip('/')
+    lower = raw.lower()
+    inferred: Optional[str] = None
+    try:
+        parsed = urlparse(raw if '://' in raw else f'https://{raw}')
+        host = (parsed.hostname or '').lower()
+        if host.endswith('.api.cognitive.microsoft.com'):
+            inferred = host.split('.')[0] or None
+    except Exception:
+        pass
+
+    if 'api.cognitive.microsoft.com' in lower:
+        effective = inferred or reg or 'eastus'
+        if inferred and reg and inferred != reg:
+            log.warning(
+                'Azure TTS: region (%s) does not match region in Endpoint URL (%s); '
+                'using endpoint host for Speech REST.',
+                reg,
+                inferred,
+            )
+            effective = inferred
+        log.info(
+            'Azure TTS: cognitive services endpoint is not used for Speech REST; using %s',
+            regional_tts_origin(effective),
+        )
+        return regional_tts_origin(effective)
+
+    if 'tts.speech.microsoft.com' in lower:
+        try:
+            parsed = urlparse(raw if '://' in raw else f'https://{raw}')
+            scheme = parsed.scheme or 'https'
+            if parsed.netloc:
+                return f'{scheme}://{parsed.netloc}'.rstrip('/')
+        except Exception:
+            pass
+        return raw
+
+    try:
+        parsed = urlparse(raw if '://' in raw else f'https://{raw}')
+        if parsed.scheme and parsed.netloc:
+            return f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
+    except Exception:
+        pass
+
+    return raw
 
 
 def transcode_audio_to_mp3(audio_data: bytes, content_type_header: str, output_path: str) -> bool:
@@ -206,10 +302,20 @@ def set_faster_whisper_model(model: str, auto_update: bool = False):
 ##########################################
 
 
+def _clamp_openai_tts_speed(value) -> float:
+    """OpenAI-compatible TTS (incl. openai-edge-tts): speed multiplier 0.2–2.0, default 1."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = 1.0
+    return max(0.2, min(2.0, v))
+
+
 class TTSConfigForm(BaseModel):
     OPENAI_API_BASE_URL: str
     OPENAI_API_KEY: str
     OPENAI_PARAMS: Optional[dict] = None
+    OPENAI_SPEED: float = 1.0
     API_KEY: str
     ENGINE: str
     MODEL: str
@@ -253,6 +359,7 @@ async def get_audio_config(request: Request, user=Depends(get_admin_user)):
             'OPENAI_API_BASE_URL': request.app.state.config.TTS_OPENAI_API_BASE_URL,
             'OPENAI_API_KEY': request.app.state.config.TTS_OPENAI_API_KEY,
             'OPENAI_PARAMS': request.app.state.config.TTS_OPENAI_PARAMS,
+            'OPENAI_SPEED': _clamp_openai_tts_speed(request.app.state.config.TTS_OPENAI_SPEED),
             'API_KEY': request.app.state.config.TTS_API_KEY,
             'ENGINE': request.app.state.config.TTS_ENGINE,
             'MODEL': request.app.state.config.TTS_MODEL,
@@ -290,6 +397,7 @@ async def update_audio_config(request: Request, form_data: AudioConfigUpdateForm
     request.app.state.config.TTS_OPENAI_API_BASE_URL = form_data.tts.OPENAI_API_BASE_URL
     request.app.state.config.TTS_OPENAI_API_KEY = form_data.tts.OPENAI_API_KEY
     request.app.state.config.TTS_OPENAI_PARAMS = form_data.tts.OPENAI_PARAMS
+    request.app.state.config.TTS_OPENAI_SPEED = _clamp_openai_tts_speed(form_data.tts.OPENAI_SPEED)
     request.app.state.config.TTS_API_KEY = form_data.tts.API_KEY
     request.app.state.config.TTS_ENGINE = form_data.tts.ENGINE
     request.app.state.config.TTS_MODEL = form_data.tts.MODEL
@@ -334,6 +442,7 @@ async def update_audio_config(request: Request, form_data: AudioConfigUpdateForm
             'OPENAI_API_BASE_URL': request.app.state.config.TTS_OPENAI_API_BASE_URL,
             'OPENAI_API_KEY': request.app.state.config.TTS_OPENAI_API_KEY,
             'OPENAI_PARAMS': request.app.state.config.TTS_OPENAI_PARAMS,
+            'OPENAI_SPEED': request.app.state.config.TTS_OPENAI_SPEED,
             'API_KEY': request.app.state.config.TTS_API_KEY,
             'SPLIT_ON': request.app.state.config.TTS_SPLIT_ON,
             'AZURE_SPEECH_REGION': request.app.state.config.TTS_AZURE_SPEECH_REGION,
@@ -393,10 +502,12 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         )
 
     body = await request.body()
+    tts_speed_sig = str(_clamp_openai_tts_speed(request.app.state.config.TTS_OPENAI_SPEED)).encode('utf-8')
     name = hashlib.sha256(
         body
         + str(request.app.state.config.TTS_ENGINE).encode('utf-8')
         + str(request.app.state.config.TTS_MODEL).encode('utf-8')
+        + tts_speed_sig
     ).hexdigest()
 
     file_path = SPEECH_CACHE_DIR.joinpath(f'{name}.mp3')
@@ -414,8 +525,12 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         raise HTTPException(status_code=400, detail='Invalid JSON payload')
 
     r = None
-    if request.app.state.config.TTS_ENGINE == 'openai':
+    if request.app.state.config.TTS_ENGINE in ('openai', 'custom_openai'):
         payload['model'] = request.app.state.config.TTS_MODEL
+
+        tts_base = (request.app.state.config.TTS_OPENAI_API_BASE_URL or '').strip().rstrip('/')
+        tts_token = (request.app.state.config.TTS_OPENAI_API_KEY or '').strip()
+        is_openai_official = tts_base.lower().startswith('https://api.openai.com')
 
         try:
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
@@ -424,16 +539,16 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                     **payload,
                     **(request.app.state.config.TTS_OPENAI_PARAMS or {}),
                 }
+                payload['speed'] = _clamp_openai_tts_speed(request.app.state.config.TTS_OPENAI_SPEED)
 
-                headers = {
-                    'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {request.app.state.config.TTS_OPENAI_API_KEY}',
-                }
+                headers: dict[str, str] = {'Content-Type': 'application/json'}
+                if tts_token:
+                    headers['Authorization'] = f'Bearer {tts_token}'
                 if ENABLE_FORWARD_USER_INFO_HEADERS:
                     headers = include_user_info_headers(headers, user)
 
                 r = await session.post(
-                    url=f'{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/speech',
+                    url=f'{tts_base}/audio/speech',
                     json=payload,
                     headers=headers,
                     ssl=AIOHTTP_CLIENT_SESSION_SSL,
@@ -469,6 +584,13 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                         detail = f'External: {res["error"]}'
                 except Exception:
                     detail = f'External: {e}'
+
+                if r.status == status.HTTP_401_UNAUTHORIZED and not is_openai_official:
+                    detail = (
+                        f'{detail} '
+                        'Custom TTS (e.g. openai-edge-tts with REQUIRE_API_KEY): set Admin → Audio → API Key '
+                        'to the exact same value as the server API_KEY environment variable.'
+                    ).strip()
 
             raise HTTPException(
                 status_code=status_code,
@@ -537,6 +659,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
         region = request.app.state.config.TTS_AZURE_SPEECH_REGION or 'eastus'
         base_url = request.app.state.config.TTS_AZURE_SPEECH_BASE_URL
+        azure_origin = resolve_azure_tts_rest_origin(region, base_url)
         language = request.app.state.config.TTS_VOICE
         locale = '-'.join(request.app.state.config.TTS_VOICE.split('-')[:2])
         output_format = request.app.state.config.TTS_AZURE_SPEECH_OUTPUT_FORMAT
@@ -548,7 +671,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
             async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 async with session.post(
-                    (base_url or f'https://{region}.tts.speech.microsoft.com') + '/cognitiveservices/v1',
+                    f'{azure_origin}/cognitiveservices/v1',
                     headers={
                         'Ocp-Apim-Subscription-Key': request.app.state.config.TTS_API_KEY,
                         'Content-Type': 'application/ssml+xml',
@@ -1038,7 +1161,7 @@ def transcription_handler(request, file_path, metadata, user=None):
                     }
 
                 # Prepare chat completions request
-                url = f'{api_base_url}/chat/completions'
+                url = resolve_openai_chat_completions_upstream_url(api_base_url)
 
                 # Add language instruction if specified
                 language = metadata.get('language', None) if metadata else None
@@ -1371,14 +1494,18 @@ async def transcription(
 
 async def get_available_models(request: Request) -> list[dict]:
     available_models = []
-    if request.app.state.config.TTS_ENGINE == 'openai':
+    if request.app.state.config.TTS_ENGINE in ('openai', 'custom_openai'):
         # Use custom endpoint if not using the official OpenAI API URL
         if not request.app.state.config.TTS_OPENAI_API_BASE_URL.startswith('https://api.openai.com'):
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
             async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                 try:
+                    headers = {}
+                    if request.app.state.config.TTS_OPENAI_API_KEY:
+                        headers['Authorization'] = f'Bearer {request.app.state.config.TTS_OPENAI_API_KEY}'
                     async with session.get(
                         f'{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/models',
+                        headers=headers,
                         ssl=AIOHTTP_CLIENT_SESSION_SSL,
                     ) as response:
                         response.raise_for_status()
@@ -1389,8 +1516,12 @@ async def get_available_models(request: Request) -> list[dict]:
                     # Fallback to standard OpenAI-compatible /models endpoint
                     # (used by KokoroTTS and similar custom TTS servers)
                     try:
+                        headers = {}
+                        if request.app.state.config.TTS_OPENAI_API_KEY:
+                            headers['Authorization'] = f'Bearer {request.app.state.config.TTS_OPENAI_API_KEY}'
                         async with session.get(
                             f'{request.app.state.config.TTS_OPENAI_API_BASE_URL}/models',
+                            headers=headers,
                             ssl=AIOHTTP_CLIENT_SESSION_SSL,
                         ) as response:
                             response.raise_for_status()
@@ -1429,23 +1560,132 @@ async def get_models(request: Request, user=Depends(get_verified_user)):
     return {'models': await get_available_models(request)}
 
 
+def _openai_compatible_tts_voice_fetch_urls(api_base_url: str) -> list[str]:
+    """
+    Candidate GET URLs for OpenAI-compatible TTS servers.
+
+    travisvn/openai-edge-tts exposes a *small* OpenAI-alias list at /audio/voices
+    (voice_mapping only). Full Edge voices are at /v1/voices/all and /voices/all.
+    See: https://github.com/travisvn/openai-edge-tts/blob/main/app/server.py
+    """
+    base = (api_base_url or '').strip().rstrip('/')
+    if not base:
+        return []
+    urls: list[str] = []
+    if base.lower().endswith('/v1'):
+        urls.extend(
+            [
+                f'{base}/voices/all',
+                f'{base}/audio/voices',
+            ]
+        )
+    else:
+        urls.extend(
+            [
+                f'{base}/v1/voices/all',
+                f'{base}/voices/all',
+                f'{base}/v1/audio/voices',
+                f'{base}/audio/voices',
+            ]
+        )
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            ordered.append(u)
+    return ordered
+
+
+def _coerce_openai_compatible_voice_entry(voice) -> tuple[str, str] | None:
+    """Return (voice_id, display_name) for one entry, or None if unusable."""
+    if isinstance(voice, str):
+        s = voice.strip()
+        return (s, s) if s else None
+    if not isinstance(voice, dict):
+        return None
+    d = voice
+    vid = (
+        d.get('id')
+        or d.get('voice_id')
+        or d.get('short_name')
+        or d.get('ShortName')
+        or d.get('name')
+        or d.get('Name')
+    )
+    if vid is None or str(vid).strip() == '':
+        return None
+    vid = str(vid).strip()
+    vname = d.get('name') or d.get('Name') or d.get('DisplayName') or d.get('id') or vid
+    return vid, str(vname)
+
+
+def _openai_compatible_voices_payload_to_dict(data) -> dict[str, str]:
+    """Normalize JSON bodies from /audio/voices, /voices/all, or OpenAI-style list."""
+    out: dict[str, str] = {}
+    if data is None:
+        return out
+    if isinstance(data, list):
+        voices_iter = data
+    elif isinstance(data, dict):
+        voices_iter = data.get('voices') or data.get('data') or data.get('items') or []
+        if not isinstance(voices_iter, list):
+            voices_iter = []
+    else:
+        return out
+    for voice in voices_iter:
+        pair = _coerce_openai_compatible_voice_entry(voice)
+        if pair:
+            vid, vname = pair
+            out[vid] = vname
+    return out
+
+
+async def _fetch_openai_compatible_custom_voices(
+    session: aiohttp.ClientSession, api_base_url: str, headers: dict
+) -> dict[str, str]:
+    """
+    Query multiple known endpoints and keep the largest voice map.
+    openai-edge-tts /audio/voices is intentionally tiny; /voices/all is the full catalog.
+    """
+    best: dict[str, str] = {}
+    for url in _openai_compatible_tts_voice_fetch_urls(api_base_url):
+        try:
+            async with session.get(url, headers=headers, ssl=AIOHTTP_CLIENT_SESSION_SSL) as response:
+                if response.status in (404, 405):
+                    continue
+                response.raise_for_status()
+                payload = await response.json()
+                merged = _openai_compatible_voices_payload_to_dict(payload)
+                if len(merged) > len(best):
+                    best = merged
+                    log.debug('TTS custom voices: using %s (%d entries)', url, len(best))
+        except Exception as e:
+            log.debug('TTS custom voices: skip %s - %s', url, e)
+    return best
+
+
 async def get_available_voices(request) -> dict:
     """Returns {voice_id: voice_name} dict"""
     available_voices = {}
-    if request.app.state.config.TTS_ENGINE == 'openai':
+    if request.app.state.config.TTS_ENGINE == 'custom_openai':
+        available_voices = {vid: vid for vid in CUSTOM_OPENAI_TTS_FIXED_VOICE_IDS}
+    elif request.app.state.config.TTS_ENGINE == 'openai':
         # Use custom endpoint if not using the official OpenAI API URL
         if not request.app.state.config.TTS_OPENAI_API_BASE_URL.startswith('https://api.openai.com'):
             try:
                 timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
                 async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-                    async with session.get(
-                        f'{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/voices',
-                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
-                    ) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-                        voices_list = data.get('voices', [])
-                        available_voices = {voice['id']: voice['name'] for voice in voices_list}
+                    headers = {}
+                    if request.app.state.config.TTS_OPENAI_API_KEY:
+                        headers['Authorization'] = f'Bearer {request.app.state.config.TTS_OPENAI_API_KEY}'
+                    available_voices = await _fetch_openai_compatible_custom_voices(
+                        session,
+                        request.app.state.config.TTS_OPENAI_API_BASE_URL,
+                        headers,
+                    )
+                    if not available_voices:
+                        raise ValueError('No voices returned from custom TTS base URL')
             except Exception as e:
                 log.error(f'Error fetching voices from custom endpoint: {str(e)}')
                 available_voices = {
@@ -1475,7 +1715,7 @@ async def get_available_voices(request) -> dict:
         try:
             region = request.app.state.config.TTS_AZURE_SPEECH_REGION
             base_url = request.app.state.config.TTS_AZURE_SPEECH_BASE_URL
-            url = (base_url or f'https://{region}.tts.speech.microsoft.com') + '/cognitiveservices/voices/list'
+            url = f'{resolve_azure_tts_rest_origin(region, base_url)}/cognitiveservices/voices/list'
             headers = {'Ocp-Apim-Subscription-Key': request.app.state.config.TTS_API_KEY}
 
             timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)

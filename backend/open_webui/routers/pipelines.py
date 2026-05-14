@@ -23,6 +23,7 @@ from open_webui.constants import ERROR_MESSAGES
 
 
 from open_webui.routers.openai import get_all_models_responses
+from open_webui.utils.openai_connection_keys import pick_rotating_openai_api_key
 
 from open_webui.utils.auth import get_admin_user
 
@@ -73,7 +74,7 @@ async def process_pipeline_inlet_filter(request, payload, user, models):
                 continue
 
             url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-            key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+            key = pick_rotating_openai_api_key(request, urlIdx)
 
             if not key:
                 continue
@@ -137,7 +138,7 @@ async def process_pipeline_outlet_filter(request, payload, user, models):
                 continue
 
             url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-            key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+            key = pick_rotating_openai_api_key(request, urlIdx)
 
             if not key:
                 continue
@@ -237,7 +238,7 @@ async def upload_pipeline(
             shutil.copyfileobj(file.file, buffer)
 
         url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-        key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+        key = pick_rotating_openai_api_key(request, urlIdx)
 
         headers = {'Authorization': f'Bearer {key}'}
 
@@ -298,7 +299,7 @@ async def add_pipeline(request: Request, form_data: AddPipelineForm, user=Depend
         urlIdx = form_data.urlIdx
 
         url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-        key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+        key = pick_rotating_openai_api_key(request, urlIdx)
 
         async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.post(
@@ -342,7 +343,7 @@ async def delete_pipeline(request: Request, form_data: DeletePipelineForm, user=
         urlIdx = form_data.urlIdx
 
         url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-        key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+        key = pick_rotating_openai_api_key(request, urlIdx)
 
         async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.delete(
@@ -379,7 +380,7 @@ async def get_pipelines(request: Request, urlIdx: Optional[int] = None, user=Dep
     response = None
     try:
         url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-        key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+        key = pick_rotating_openai_api_key(request, urlIdx)
 
         async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(
@@ -420,7 +421,7 @@ async def get_pipeline_valves(
     response = None
     try:
         url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-        key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+        key = pick_rotating_openai_api_key(request, urlIdx)
 
         async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(
@@ -461,7 +462,7 @@ async def get_pipeline_valves_spec(
     response = None
     try:
         url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-        key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+        key = pick_rotating_openai_api_key(request, urlIdx)
 
         async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(
@@ -503,7 +504,7 @@ async def update_pipeline_valves(
     response = None
     try:
         url = request.app.state.config.OPENAI_API_BASE_URLS[urlIdx]
-        key = request.app.state.config.OPENAI_API_KEYS[urlIdx]
+        key = pick_rotating_openai_api_key(request, urlIdx)
 
         async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.post(

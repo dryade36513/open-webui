@@ -1,5 +1,7 @@
 import { WEBUI_BASE_URL } from '$lib/constants';
 import { convertOpenApiToToolPayload } from '$lib/utils';
+import { pickRotatingDirectConnectionApiKey } from '$lib/utils/openaiConnectionKeys';
+import { normalizeOpenAIModelsListPayload } from '$lib/utils/openaiModelsResponse';
 import { getOpenAIModelsDirect } from './openai';
 
 const TOOL_SERVER_FETCH_TIMEOUT = 10000;
@@ -72,6 +74,7 @@ export const getModels = async (
 
 				if (idx.toString() in OPENAI_API_CONFIGS) {
 					const apiConfig = OPENAI_API_CONFIGS[idx.toString()] ?? {};
+					const urlIdxNum = Number.parseInt(idx, 10);
 
 					const enable = apiConfig?.enable ?? true;
 					const modelIds = apiConfig?.model_ids ?? [];
@@ -97,7 +100,12 @@ export const getModels = async (
 						} else {
 							requests.push(
 								(async () => {
-									return await getOpenAIModelsDirect(url, OPENAI_API_KEYS[idx])
+									const rotatedKey = pickRotatingDirectConnectionApiKey(
+										urlIdxNum,
+										OPENAI_API_KEYS[idx],
+										apiConfig
+									);
+									return await getOpenAIModelsDirect(url, rotatedKey)
 										.then((res) => {
 											return res;
 										})
@@ -131,7 +139,8 @@ export const getModels = async (
 				const response = responses[idx];
 				const apiConfig = OPENAI_API_CONFIGS[idx.toString()] ?? {};
 
-				let models = Array.isArray(response) ? response : (response?.data ?? []);
+				const normalized = normalizeOpenAIModelsListPayload(response);
+				let models = Array.isArray(normalized.data) ? normalized.data : [];
 				models = models.map((model) => ({ ...model, openai: { id: model.id }, urlIdx: idx }));
 
 				const prefixId = apiConfig.prefix_id;

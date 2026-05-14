@@ -66,6 +66,7 @@ from open_webui.utils.asgi_middleware import (
 from open_webui.utils.audit import AuditLevel, AuditLoggingMiddleware
 from open_webui.utils.logger import start_logger
 from open_webui.utils.session_pool import get_session
+from open_webui.utils.openai_connection_keys import pick_rotating_openai_api_key
 from open_webui.socket.main import (
     MODELS,
     app as socket_app,
@@ -216,6 +217,7 @@ from open_webui.config import (
     AUDIO_TTS_OPENAI_API_BASE_URL,
     AUDIO_TTS_OPENAI_API_KEY,
     AUDIO_TTS_OPENAI_PARAMS,
+    AUDIO_TTS_OPENAI_SPEED,
     AUDIO_TTS_API_KEY,
     AUDIO_TTS_SPLIT_ON,
     AUDIO_TTS_AZURE_SPEECH_REGION,
@@ -1326,6 +1328,7 @@ app.state.config.TTS_VOICE = AUDIO_TTS_VOICE
 app.state.config.TTS_OPENAI_API_BASE_URL = AUDIO_TTS_OPENAI_API_BASE_URL
 app.state.config.TTS_OPENAI_API_KEY = AUDIO_TTS_OPENAI_API_KEY
 app.state.config.TTS_OPENAI_PARAMS = AUDIO_TTS_OPENAI_PARAMS
+app.state.config.TTS_OPENAI_SPEED = AUDIO_TTS_OPENAI_SPEED
 
 app.state.config.TTS_API_KEY = AUDIO_TTS_API_KEY
 app.state.config.TTS_SPLIT_ON = AUDIO_TTS_SPLIT_ON
@@ -1603,9 +1606,7 @@ async def unload_model(request: Request, form_data: ModelUnloadForm, user=Depend
         api_config = request.app.state.config.OPENAI_API_CONFIGS.get(str(idx), {})
         provider = api_config.get('provider', '')
         base_url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-        key = (
-            request.app.state.config.OPENAI_API_KEYS[idx] if idx < len(request.app.state.config.OPENAI_API_KEYS) else ''
-        )
+        key = pick_rotating_openai_api_key(request, idx) or ''
 
         if provider == 'llama.cpp':
             root_url = base_url.rstrip('/').removesuffix('/v1')

@@ -1281,31 +1281,28 @@ except Exception as e:
 if default_prompt_suggestions == []:
     default_prompt_suggestions = [
         {
-            'title': ['Help me study', 'vocabulary for a college entrance exam'],
-            'content': "Help me study vocabulary: write a sentence for me to fill in the blank, and I'll try to pick the correct option.",
+            'title': ['幫我準備', '大學入學考的單字'],
+            'content': '幫我練習單字：請寫一個有空格讓我填的句子，我會試著選出正確選項。',
         },
         {
-            'title': ['Give me ideas', "for what to do with my kids' art"],
-            'content': "What are 5 creative things I could do with my kids' art? I don't want to throw them away, but it's also so much clutter.",
+            'title': ['給我一些點子', '怎麼處理孩子的畫作'],
+            'content': '孩子畫了很多作品，我不想丟掉但也覺得太佔空間，請給我五個有創意的處理方式。',
         },
         {
-            'title': ['Tell me a fun fact', 'about the Roman Empire'],
-            'content': 'Tell me a random fun fact about the Roman Empire',
+            'title': ['告訴我一個冷知識', '關於羅馬帝國'],
+            'content': '隨機告訴我一個關於羅馬帝國的有趣冷知識。',
         },
         {
-            'title': ['Show me a code snippet', "of a website's sticky header"],
-            'content': "Show me a code snippet of a website's sticky header in CSS and JavaScript.",
+            'title': ['示範一段程式碼', '網站固定置頂導覽列'],
+            'content': '請示範如何用 CSS 與 JavaScript 實作網頁的固定置頂（sticky）頁首。',
         },
         {
-            'title': [
-                'Explain options trading',
-                "if I'm familiar with buying and selling stocks",
-            ],
-            'content': "Explain options trading in simple terms if I'm familiar with buying and selling stocks.",
+            'title': ['用白話解釋選擇權交易', '我熟悉買賣股票的話'],
+            'content': '假設我已經熟悉一般股票買賣，請用簡單的方式解釋選擇權交易。',
         },
         {
-            'title': ['Overcome procrastination', 'give me tips'],
-            'content': 'Could you start by asking me about instances when I procrastinate the most and then give me some suggestions to overcome it?',
+            'title': ['我想克服拖延', '請給我建議'],
+            'content': '請先問我最常在哪些情況拖延，再依此給我一些改善拖延的具體建議。',
         },
     ]
 
@@ -4084,6 +4081,18 @@ AUDIO_TTS_OPENAI_PARAMS = PersistentConfig(
     'AUDIO_TTS_OPENAI_PARAMS',
     'audio.tts.openai.params',
     audio_tts_openai_params,
+)
+
+try:
+    _audio_tts_openai_speed_env = float(os.getenv('AUDIO_TTS_OPENAI_SPEED', '1'))
+except ValueError:
+    _audio_tts_openai_speed_env = 1.0
+_audio_tts_openai_speed_env = max(0.2, min(2.0, _audio_tts_openai_speed_env))
+
+AUDIO_TTS_OPENAI_SPEED = PersistentConfig(
+    'AUDIO_TTS_OPENAI_SPEED',
+    'audio.tts.openai.speed',
+    _audio_tts_openai_speed_env,
 )
 
 

@@ -196,10 +196,16 @@ soup = BeautifulSoup(html_content, 'html.parser')
 # Initialize JSON structure
 changelog_json = {}
 
-# Iterate over each version
+# Iterate over each version (e.g. "[0.9.5] - 2026-05-09" or "[Unreleased]" with no date)
 for version in soup.find_all('h2'):
-    version_number = version.get_text().strip().split(' - ')[0][1:-1]  # Remove brackets
-    date = version.get_text().strip().split(' - ')[1]
+    heading = version.get_text().strip()
+    segments = heading.split(' - ', 1)
+    title_part = segments[0].strip()
+    if title_part.startswith('[') and title_part.endswith(']'):
+        version_number = title_part[1:-1]
+    else:
+        version_number = title_part
+    date = segments[1].strip() if len(segments) > 1 else ''
 
     version_data = {'date': date}
 

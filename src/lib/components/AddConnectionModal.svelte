@@ -6,6 +6,7 @@
 	import { settings } from '$lib/stores';
 	import { verifyOpenAIConnection } from '$lib/apis/openai';
 	import { verifyOllamaConnection } from '$lib/apis/ollama';
+	import { extractModelIdsFromModelsPayload } from '$lib/utils/openaiModelsResponse';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
@@ -33,6 +34,8 @@
 
 	let url = '';
 	let key = '';
+	/** Multiple bearer keys for OpenAI-compatible connections (not Ollama). */
+	let apiKeyEntries = [''];
 	let auth_type = 'bearer';
 
 	let connectionType = 'external';
@@ -56,6 +59,7 @@
 	let modelIds = [];
 
 	let loading = false;
+	let importModelsLoading = false;
 	let showDeleteConfirmDialog = false;
 
 	const verifyOllamaHandler = async () => {
@@ -94,11 +98,14 @@
 			}
 		}
 
+		const verifyKeys = normalizedBearerKeys();
+		const verifyKey = verifyKeys[0] ?? '';
+
 		const res = await verifyOpenAIConnection(
 			localStorage.token,
 			{
 				url,
-				key,
+				key: verifyKey,
 				config: {
 					auth_type,
 					...(provider ? { provider } : azure ? { azure: true } : {}),
@@ -131,6 +138,78 @@
 		}
 	};
 
+	const importModelsFromApi = async () => {
+		if (ollama || azure) return;
+
+		url = url.replace(/\/$/, '');
+		if (!url) {
+			toast.error($i18n.t('URL is required'));
+			return;
+		}
+
+		if (auth_type === 'bearer' && normalizedBearerKeys().length === 0) {
+			toast.error($i18n.t('An API key is required to fetch models from the API.'));
+			return;
+		}
+
+		let parsedHeaders = null;
+		if (headers) {
+			try {
+				parsedHeaders = JSON.parse(headers);
+				if (typeof parsedHeaders !== 'object' || Array.isArray(parsedHeaders)) {
+					toast.error($i18n.t('Headers must be a valid JSON object'));
+					return;
+				}
+			} catch {
+				toast.error($i18n.t('Headers must be a valid JSON object'));
+				return;
+			}
+		}
+
+		importModelsLoading = true;
+		try {
+			const verifyKey = normalizedBearerKeys()[0] ?? '';
+			const res = await verifyOpenAIConnection(
+				localStorage.token,
+				{
+					url,
+					key: verifyKey,
+					config: {
+						auth_type,
+						...(provider ? { provider } : {}),
+						...(azure ? { azure: true } : {}),
+						api_version: apiVersion,
+						...(parsedHeaders ? { headers: parsedHeaders } : {})
+					}
+				},
+				direct
+			);
+			const ids = extractModelIdsFromModelsPayload(res);
+			if (!ids.length) {
+				toast.warning($i18n.t('No models were found in the API response.'));
+				return;
+			}
+			modelIds = [...new Set([...modelIds, ...ids])];
+			toast.success($i18n.t('Imported {{count}} model ID(s) from the API.', { count: ids.length }));
+		} catch (error) {
+			toast.error(`${error}`);
+		} finally {
+			importModelsLoading = false;
+		}
+	};
+
+	const addApiKeyField = () => {
+		apiKeyEntries = [...apiKeyEntries, ''];
+	};
+
+	const removeApiKeyField = (entryIdx: number) => {
+		if (apiKeyEntries.length <= 1) return;
+		apiKeyEntries = apiKeyEntries.filter((_, i) => i !== entryIdx);
+	};
+
+	const normalizedBearerKeys = () =>
+		apiKeyEntries.map((k) => (k ?? '').trim()).filter((k) => k.length > 0);
+
 	const submitHandler = async () => {
 		loading = true;
 
@@ -140,6 +219,9 @@
 			return;
 		}
 
+		const bearerKeys = ollama ? [(key ?? '').trim()].filter(Boolean) : normalizedBearerKeys();
+		const primaryBearerKey = bearerKeys[0] ?? '';
+
 		if (azure) {
 			if (!apiVersion) {
 				loading = false;
@@ -148,7 +230,7 @@
 				return;
 			}
 
-			if (!key && !['azure_ad', 'microsoft_entra_id'].includes(auth_type)) {
+			if (!primaryBearerKey && !['azure_ad', 'microsoft_entra_id'].includes(auth_type)) {
 				loading = false;
 
 				toast.error($i18n.t('Key is required'));
@@ -180,7 +262,7 @@
 
 		const connection = {
 			url,
-			key,
+			key: ollama ? key : primaryBearerKey,
 			config: {
 				enable: enable,
 				tags: tags,
@@ -191,7 +273,8 @@
 				headers: headers ? JSON.parse(headers) : undefined,
 				...(provider ? { provider } : !ollama && azure ? { azure: true } : {}),
 				...(azure ? { api_version: apiVersion } : {}),
-				...(apiType ? { api_type: apiType } : {})
+				...(apiType ? { api_type: apiType } : {}),
+				...(!ollama && auth_type === 'bearer' && bearerKeys.length > 1 ? { api_keys: bearerKeys } : {})
 			}
 		};
 
@@ -202,6 +285,7 @@
 
 		url = '';
 		key = '';
+		apiKeyEntries = [''];
 		auth_type = 'bearer';
 		prefixId = '';
 		tags = [];
@@ -212,6 +296,19 @@
 		if (connection) {
 			url = connection.url;
 			key = connection.key;
+
+			if (ollama) {
+				apiKeyEntries = [''];
+			} else {
+				const extra = connection.config?.api_keys;
+				if (Array.isArray(extra) && extra.some((k) => String(k ?? '').trim())) {
+					apiKeyEntries = extra.map((k) => String(k ?? ''));
+				} else if (connection.key) {
+					apiKeyEntries = [connection.key];
+				} else {
+					apiKeyEntries = [''];
+				}
+			}
 
 			auth_type = connection.config.auth_type ?? 'bearer';
 			headers = connection.config?.headers
@@ -398,13 +495,53 @@
 										</select>
 									</div>
 
-									<div class="flex flex-1 items-center">
+									<div class="flex flex-1 flex-col gap-1.5 min-w-0">
 										{#if auth_type === 'bearer'}
-											<SensitiveInput
-												bind:value={key}
-												placeholder={$i18n.t('API Key')}
-												required={false}
-											/>
+											{#if ollama}
+												<SensitiveInput
+													bind:value={key}
+													placeholder={$i18n.t('API Key')}
+													required={false}
+												/>
+											{:else}
+												{#each apiKeyEntries as _, keyIdx}
+													<div class="flex gap-1 items-center w-full">
+														<SensitiveInput
+															id={`openwebui-conn-apikey-${keyIdx}`}
+															bind:value={apiKeyEntries[keyIdx]}
+															placeholder={$i18n.t('API Key')}
+															required={false}
+															outerClassName="flex flex-1 min-w-0 bg-transparent"
+														/>
+														{#if apiKeyEntries.length > 1}
+															<button
+																type="button"
+																class="shrink-0 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-850 transition"
+																aria-label={$i18n.t('Remove API key field')}
+																on:click={() => removeApiKeyField(keyIdx)}
+															>
+																<Minus strokeWidth="2" className="size-3.5" />
+															</button>
+														{/if}
+													</div>
+												{/each}
+												<div class="flex justify-end">
+													<button
+														type="button"
+														class="text-xs text-gray-700 dark:text-gray-300 hover:underline"
+														on:click={addApiKeyField}
+													>
+														{$i18n.t('Add API Key')}
+													</button>
+												</div>
+												<div
+													class={`text-[10px] leading-snug ${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : 'text-gray-500'}`}
+												>
+													{$i18n.t(
+														'Multiple API keys are used in rotation on each server request to reduce rate limits.'
+													)}
+												</div>
+											{/if}
 										{:else if auth_type === 'none'}
 											<div
 												class={`text-xs self-center translate-y-[1px] ${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : 'text-gray-500'}`}
@@ -580,14 +717,34 @@
 						{/if}
 
 						<div class="flex flex-col w-full mt-2">
-							<div class="mb-1 flex justify-between">
+							<div class="mb-1 flex justify-between items-center gap-2">
 								<div
 									class={`mb-0.5 text-xs text-gray-500
 								${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : ''}`}
 								>
 									{$i18n.t('Model IDs')}
 								</div>
+								{#if !ollama && !azure}
+									<button
+										type="button"
+										class="shrink-0 text-xs text-gray-700 dark:text-gray-300 hover:underline disabled:opacity-50 inline-flex items-center gap-1"
+										disabled={importModelsLoading}
+										on:click={importModelsFromApi}
+									>
+										{#if importModelsLoading}
+											<Spinner className="size-3.5" />
+										{/if}
+										{$i18n.t('Import from API')}
+									</button>
+								{/if}
 							</div>
+							{#if !ollama && !azure}
+								<p
+									class={`text-xs mb-1.5 ${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : 'text-gray-500'}`}
+								>
+									{$i18n.t('Models import hint', { path: `${url || ''}/models` })}
+								</p>
+							{/if}
 
 							{#if modelIds.length > 0}
 								<ul class="flex flex-col">

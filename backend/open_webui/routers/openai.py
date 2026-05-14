@@ -60,6 +60,12 @@ from open_webui.utils.session_pool import (
     get_session,
     stream_wrapper,
 )
+from open_webui.utils.openai_connection_keys import pick_rotating_openai_api_key
+from open_webui.utils.openai_models_response import normalize_openai_compatible_models_payload
+from open_webui.utils.openai_provider_urls import (
+    resolve_openai_chat_completions_upstream_url,
+    resolve_openai_provider_model_id,
+)
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers, get_custom_headers
@@ -131,7 +137,8 @@ async def get_models_request(
 ):
     if is_anthropic_url(url):
         return await get_anthropic_models(url, key, user=user)
-    return await send_get_request(request, f'{url}/models', key, user=user, config=config)
+    raw = await send_get_request(request, f'{url}/models', key, user=user, config=config)
+    return normalize_openai_compatible_models_payload(raw)
 
 
 def openai_reasoning_model_handler(payload):
@@ -314,7 +321,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
             return FileResponse(file_path)
 
         url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-        key = request.app.state.config.OPENAI_API_KEYS[idx]
+        key = pick_rotating_openai_api_key(request, idx)
         api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
             str(idx),
             request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
@@ -395,7 +402,9 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
     request_tasks = []
     for idx, url in enumerate(api_base_urls):
         if (str(idx) not in api_configs) and (url not in api_configs):  # Legacy support
-            request_tasks.append(get_models_request(request, url, api_keys[idx], user=user))
+            request_tasks.append(
+                get_models_request(request, url, pick_rotating_openai_api_key(request, idx), user=user)
+            )
         else:
             api_config = api_configs.get(
                 str(idx),
@@ -407,7 +416,11 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
 
             if enable:
                 if len(model_ids) == 0:
-                    request_tasks.append(get_models_request(request, url, api_keys[idx], user=user, config=api_config))
+                    request_tasks.append(
+                        get_models_request(
+                            request, url, pick_rotating_openai_api_key(request, idx), user=user, config=api_config
+                        )
+                    )
                 else:
                     model_list = {
                         'object': 'list',
@@ -502,7 +515,6 @@ async def get_openai_loaded_models(request: Request, models: dict, api_base_urls
       - **llama.cpp** – queries ``GET /slots`` and matches slot model IDs.
     """
     api_configs = request.app.state.config.OPENAI_API_CONFIGS
-    api_keys = request.app.state.config.OPENAI_API_KEYS
 
     for idx, url in enumerate(api_base_urls):
         api_config = api_configs.get(
@@ -514,7 +526,7 @@ async def get_openai_loaded_models(request: Request, models: dict, api_base_urls
         if provider == 'llama.cpp':
             try:
                 root_url = url.rstrip('/').removesuffix('/v1')
-                key = api_keys[idx] if idx < len(api_keys) else None
+                key = pick_rotating_openai_api_key(request, idx)
                 slots = await send_get_request(url=f'{root_url}/slots', key=key)
                 loaded_model_ids = (
                     {s.get('model') for s in slots if s.get('model')} if isinstance(slots, list) else set()
@@ -543,8 +555,10 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
     responses = await get_all_models_responses(request, user=user)
 
     def extract_data(response):
-        if response and 'data' in response:
+        if response and isinstance(response.get('data'), list):
             return response['data']
+        if response and isinstance(response.get('models'), list):
+            return response['models']
         if isinstance(response, list):
             return response
         return None
@@ -616,7 +630,7 @@ async def get_models(request: Request, url_idx: Optional[int] = None, user=Depen
         models = await get_all_models(request, user=user)
     else:
         url = request.app.state.config.OPENAI_API_BASE_URLS[url_idx]
-        key = request.app.state.config.OPENAI_API_KEYS[url_idx]
+        key = pick_rotating_openai_api_key(request, url_idx)
 
         api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
             str(url_idx),
@@ -657,7 +671,7 @@ async def get_models(request: Request, url_idx: Optional[int] = None, user=Depen
                                 pass
                             raise Exception(error_detail)
 
-                        response_data = await r.json()
+                        response_data = normalize_openai_compatible_models_payload(await r.json())
 
                         if 'api.openai.com' in url:
                             response_data['data'] = [
@@ -767,7 +781,7 @@ async def verify_connection(
                         else:
                             return PlainTextResponse(status_code=r.status, content=response_data)
 
-                    return response_data
+                    return normalize_openai_compatible_models_payload(response_data)
 
         except aiohttp.ClientError as e:
             # ClientError covers all aiohttp requests issues
@@ -1148,9 +1162,10 @@ async def generate_chat_completion(
         ),  # Legacy support
     )
 
+    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
     prefix_id = api_config.get('prefix_id', None)
-    if prefix_id:
-        payload['model'] = payload['model'].replace(f'{prefix_id}.', '')
+    canonical_model_id = model.get('openai', {}).get('id') or payload.get('model', '')
+    payload['model'] = resolve_openai_provider_model_id(url, canonical_model_id, prefix_id=prefix_id)
 
     # Add user info to the payload if the model is a pipeline
     if 'pipeline' in model and model.get('pipeline'):
@@ -1161,8 +1176,7 @@ async def generate_chat_completion(
             'role': user.role,
         }
 
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
+    key = pick_rotating_openai_api_key(request, idx)
 
     # Check if model is a reasoning model that needs special handling
     if is_openai_new_model(payload['model']):
@@ -1202,7 +1216,7 @@ async def generate_chat_completion(
                 payload = convert_to_responses_payload(payload)
                 request_url = f'{url.rstrip("/")}/responses'
             else:
-                request_url = f'{url.rstrip("/")}/chat/completions'
+                request_url = resolve_openai_chat_completions_upstream_url(url)
         else:
             api_version = api_config.get('api_version', '2023-03-15-preview')
             request_url, payload = convert_to_azure_payload(url, payload, api_version)
@@ -1218,7 +1232,7 @@ async def generate_chat_completion(
             payload = convert_to_responses_payload(payload)
             request_url = f'{url}/responses'
         else:
-            request_url = f'{url}/chat/completions'
+            request_url = resolve_openai_chat_completions_upstream_url(url)
     # For Chat Completions, strip image parts from multimodal tool messages
     # (Chat Completions doesn't support images in tool content).
     if not is_responses and 'messages' in payload:
@@ -1330,7 +1344,7 @@ async def embeddings(request: Request, form_data: dict, user):
         idx = models[model_id]['urlIdx']
 
     url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
+    key = pick_rotating_openai_api_key(request, idx)
     api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
         str(idx),
         request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
@@ -1432,7 +1446,7 @@ async def responses(
             idx = models[model_id]['urlIdx']
 
     url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
+    key = pick_rotating_openai_api_key(request, idx)
     api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
         str(idx),
         request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
@@ -1541,7 +1555,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             idx = models[model_id]['urlIdx']
 
     url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
+    key = pick_rotating_openai_api_key(request, idx)
     api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
         str(idx),
         request.app.state.config.OPENAI_API_CONFIGS.get(

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Changelog parser crash on boot.** `CHANGELOG` headings without a ` - date` suffix (for example `[Unreleased]`) no longer make `open_webui.env` raise `IndexError`, so the API and dev scripts can start normally.
+
+### Added
+
+- Self-host Docker Compose (`docker-compose.yml`, `docker-compose.https.yml`), `deployment/` env example and Caddyfile, plus `scripts/docker-selfhost-build.*` for local or DigitalOcean-style deployments.
+
 ## [0.9.5] - 2026-05-09
 
 ### Added

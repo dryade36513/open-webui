@@ -31,13 +31,12 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import RedirectResponse, StreamingResponse
-
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission, filter_allowed_access_grants
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
-from open_webui.env import ENABLE_PROFILE_IMAGE_URL_FORWARDING
+from open_webui.env import ENABLE_PROFILE_IMAGE_URL_FORWARDING, STATIC_DIR
 from open_webui.internal.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -525,6 +524,10 @@ async def get_model_profile_image(
                     url=safe_static,
                     status_code=status.HTTP_302_FOUND,
                 )
+
+    default_favicon = STATIC_DIR / 'favicon.png'
+    if default_favicon.is_file():
+        return FileResponse(str(default_favicon), media_type='image/png')
 
     return RedirectResponse(
         url='/static/favicon.png',

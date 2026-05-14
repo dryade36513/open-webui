@@ -1,0 +1,5 @@
+# 需要環境變數 WEBUI_DOMAIN（由 docker-compose.https.yml 注入）
+{$WEBUI_DOMAIN} {
+	encode gzip
+	reverse_proxy open-web-ui:8080
+}
